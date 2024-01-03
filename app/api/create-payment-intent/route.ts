@@ -11,10 +11,12 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
 const calculateOrderAmount = (items: CartProductType[]) => {
   const totalPrice = items.reduce((acc, item) => {
     const itemTotal = item.price * item.quantity;
+
     return acc + itemTotal;
   }, 0);
 
   const price: any = Math.floor(totalPrice);
+
   return price;
 };
 
@@ -39,17 +41,24 @@ export async function POST(request: Request) {
   };
 
   if (payment_intent_id) {
-    try {
-      // Kiểm tra xem có đơn hàng nào tồn tại với payment_intent_id này không
-      const existingOrder = await prisma.order.findFirst({
-        where: {
-          paymentIntentId: payment_intent_id,
-        },
-      });
+    //     update order
+    const current_intent =
+      await stripe.paymentIntents.retrieve(payment_intent_id);
 
-      if (existingOrder) {
-        // Nếu có đơn hàng, cập nhật thông tin đơn hàng hiện có
-        const updatedOrder = await prisma.order.update({
+    if (current_intent) {
+      const updated_intent = await stripe.paymentIntents.update(
+        payment_intent_id,
+        { amount: total }
+      );
+
+      const [existing_order, update_order] = await Promise.all([
+        prisma.order.findFirst({
+          where: {
+            paymentIntentId: payment_intent_id,
+          },
+        }),
+
+        prisma.order.update({
           where: {
             paymentIntentId: payment_intent_id,
           },
@@ -57,33 +66,30 @@ export async function POST(request: Request) {
             amount: total,
             products: items,
           },
-        });
+        }),
+      ]);
 
-        const updatedIntent = await stripe.paymentIntents.update(payment_intent_id, {
-          amount: total,
-        });
-
-        return NextResponse.json({ paymentIntent: updatedIntent });
-      } else {
-        // Nếu không có đơn hàng, tạo mới đơn hàng và intent
-        const paymentIntent = await stripe.paymentIntents.create({
-          amount: total,
-          currency: "usd",
-          automatic_payment_methods: { enabled: true },
-        });
-
-        orderData.paymentIntentId = paymentIntent.id;
-
-        await prisma.order.create({
-          data: orderData,
-        });
-
-        return NextResponse.json({ paymentIntent });
+      if (!existing_order) {
+        return NextResponse.error();
       }
-    } catch (error) {
-      console.error("Error:", error);
-      return NextResponse.error();
+
+      return NextResponse.json({ paymentIntent: updated_intent });
     }
+  } else {
+    //     create intent
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: total,
+      currency: "usd",
+      automatic_payment_methods: { enabled: true },
+    });
+    //     create order
+    orderData.paymentIntentId = paymentIntent.id;
+
+    await prisma.order.create({
+      data: orderData,
+    });
+
+    return NextResponse.json({ paymentIntent });
   }
 
   return NextResponse.error();
