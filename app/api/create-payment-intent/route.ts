@@ -11,87 +11,76 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
 const calculateOrderAmount = (items: CartProductType[]) => {
   const totalPrice = items.reduce((acc, item) => {
     const itemTotal = item.price * item.quantity;
-
     return acc + itemTotal;
   }, 0);
 
-  const price: any = Math.floor(totalPrice);
-
-  return price;
+  return Math.floor(totalPrice) * 100;
 };
 
 export async function POST(request: Request) {
-  const currentUser = await getCurrentUser();
+  try {
+    const currentUser = await getCurrentUser();
 
-  if (!currentUser) {
-    return NextResponse.error();
-  }
+    if (!currentUser) {
+      return NextResponse.error();
+    }
 
-  const body = await request.json();
-  const { items, payment_intent_id } = body;
-  const total = calculateOrderAmount(items) * 100;
-  const orderData = {
-    user: { connect: { id: currentUser.id } },
-    amount: total,
-    currency: "usd",
-    status: "pending",
-    deliveryStatus: "pending",
-    paymentIntentId: payment_intent_id,
-    products: items,
-  };
+    const body = await request.json();
+    const { items, payment_intent_id } = body;
+    const total = calculateOrderAmount(items);
+    const orderData = {
+      user: { connect: { id: currentUser.id } },
+      amount: total,
+      currency: "usd",
+      status: "pending",
+      deliveryStatus: "pending",
+      paymentIntentId: payment_intent_id,
+      products: items,
+    };
 
-  if (payment_intent_id) {
-    //     update order
-    const current_intent =
-      await stripe.paymentIntents.retrieve(payment_intent_id);
+    if (payment_intent_id) {
+      const current_intent = await stripe.paymentIntents.retrieve(payment_intent_id);
 
-    if (current_intent) {
-      const updated_intent = await stripe.paymentIntents.update(
-        payment_intent_id,
-        { amount: total },
-      );
+      if (current_intent) {
+        await stripe.paymentIntents.update(payment_intent_id, { amount: total });
 
-      const existingOrder = await prisma.order.findFirst({
-        where: {
-          paymentIntentId: payment_intent_id,
-        },
-      });
-
-      if (existingOrder) {
-        // Nếu có đơn hàng, cập nhật thông tin đơn hàng hiện có
-        const updatedOrder = await prisma.order.update({
+        const existingOrder = await prisma.order.findFirst({
           where: {
             paymentIntentId: payment_intent_id,
           },
-          data: {
-            amount: total,
-            products: items,
-          },
         });
 
-        const updatedIntent = await stripe.paymentIntents.update(payment_intent_id, {
-          amount: total,
-        });
+        if (existingOrder) {
+          await prisma.order.update({
+            where: {
+              paymentIntentId: payment_intent_id,
+            },
+            data: {
+              amount: total,
+              products: items,
+            },
+          });
 
-      return NextResponse.json({ paymentIntent: updated_intent });
+          return NextResponse.json({ message: "Order updated successfully" });
+        }
+      }
+    } else {
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: total,
+        currency: "usd",
+        automatic_payment_methods: { enabled: true },
+      });
+
+      orderData.paymentIntentId = paymentIntent.id;
+
+      await prisma.order.create({
+        data: orderData,
+      });
+
+      return NextResponse.json({ message: "Payment intent created successfully" });
     }
-  } else {
-    //     create intent
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount: total,
-      currency: "usd",
-      automatic_payment_methods: { enabled: true },
-    });
-    //     create order
-    orderData.paymentIntentId = paymentIntent.id;
-
-    await prisma.order.create({
-      data: orderData,
-    });
-
-    return NextResponse.json({ paymentIntent });
+  } catch (error) {
+    console.error("Error:", error);
+    return NextResponse.error();
   }
-
-  return NextResponse.error();
-}
 }
