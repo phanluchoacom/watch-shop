@@ -51,14 +51,15 @@ export async function POST(request: Request) {
         { amount: total },
       );
 
-      const [existing_order, update_order] = await Promise.all([
-        prisma.order.findFirst({
-          where: {
-            paymentIntentId: payment_intent_id,
-          },
-        }),
+      const existingOrder = await prisma.order.findFirst({
+        where: {
+          paymentIntentId: payment_intent_id,
+        },
+      });
 
-        prisma.order.update({
+      if (existingOrder) {
+        // Nếu có đơn hàng, cập nhật thông tin đơn hàng hiện có
+        const updatedOrder = await prisma.order.update({
           where: {
             paymentIntentId: payment_intent_id,
           },
@@ -66,12 +67,11 @@ export async function POST(request: Request) {
             amount: total,
             products: items,
           },
-        }),
-      ]);
+        });
 
-      if (!existing_order) {
-        return NextResponse.error();
-      }
+        const updatedIntent = await stripe.paymentIntents.update(payment_intent_id, {
+          amount: total,
+        });
 
       return NextResponse.json({ paymentIntent: updated_intent });
     }
@@ -93,4 +93,5 @@ export async function POST(request: Request) {
   }
 
   return NextResponse.error();
+}
 }
